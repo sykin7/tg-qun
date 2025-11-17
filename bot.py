@@ -4,20 +4,13 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 
-# --- 日志记录 ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- 辅助函数：解析 GROUP_MAP (不变) ---
 def parse_group_map(map_string: str):
-    """
-    解析 GROUP_MAP 环境变量
-    格式: "alias1:chat_id1,alias2:chat_id2"
-    返回: {"alias1": "chat_id1", "alias2": "chat_id2"}
-    """
     group_map = {}
     if not map_string:
         logger.warning("GROUP_MAP 环境变量为空。")
@@ -42,18 +35,13 @@ def parse_group_map(map_string: str):
         
     return group_map
 
-# --- 检查是否为管理员的辅助函数 ---
 def is_admin(user_id: int) -> bool:
-    """检查用户ID是否为管理员"""
     admin_id = os.environ.get("ADMIN_USER_ID")
     if not admin_id:
         logger.error("ADMIN_USER_ID 环境变量未设置！")
         return False
     return str(user_id) == admin_id
 
-# --- 处理器函数 ---
-
-# 1. /start 命令 (私聊)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("您无权使用此机器人。")
@@ -85,7 +73,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='MarkdownV2'
     )
 
-# 2. /getid 命令 (群组)
 async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type == "private":
         await update.message.reply_text("请在群组中运行此命令。")
@@ -97,14 +84,12 @@ async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='MarkdownV2'
     )
 
-# 3. /set 命令 (私聊) - 切换模式
 async def set_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id): return
 
     group_map = context.bot_data.get('group_map', {})
     
     try:
-        # context.args[0] 会获取 /set 后面的第一个词
         target_alias = context.args[0]
     except IndexError:
         await update.message.reply_text("请提供一个别名。用法: `/set <别名>` 或 `/set none`")
@@ -119,14 +104,12 @@ async def set_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_group_id = group_map.get(target_alias)
     
     if target_group_id:
-        # 使用 context.user_data 存储用户的“状态”
         context.user_data['active_group_alias'] = target_alias
         context.user_data['active_group_id'] = target_group_id
         await update.message.reply_text(f"✅ 已切换模式。现在您所有的消息都将自动匿名发送到: `{target_alias}`", parse_mode='MarkdownV2')
     else:
         await update.message.reply_text(f"❌ 错误：未找到别名 '{target_alias}'。")
 
-# 4. /who 命令 (私聊) - 查看当前模式
 async def who_is_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id): return
     
@@ -136,7 +119,6 @@ async def who_is_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("ℹ️ 当前未设置自动转发目标。使用 `/set <别名>` 来设置。")
 
-# 5. /to 命令 (私聊) - 快速发送纯文本
 async def fire_and_forget_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id): return
     
@@ -159,41 +141,29 @@ async def fire_and_forget_text(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ 错误：未找到别名 '{target_alias}'。")
         return
         
-    # 发送纯文本
     try:
         await context.bot.send_message(chat_id=target_group_id, text=content_to_send)
         await update.message.reply_text(f"✅ 临时文本消息已发送到: {target_alias}。")
     except Exception as e:
         await update.message.reply_text(f"❌ 发送到 {target_alias} 失败: {e}")
 
-# 6. 核心消息处理器 (私聊) - 自动转发
 async def modal_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    如果设置了 active_group，则自动复制所有非命令消息。
-    """
     if not is_admin(update.message.from_user.id): return
     
     target_group_id = context.user_data.get('active_group_id')
     target_alias = context.user_data.get('active_group_alias')
     
-    # 如果用户没有设置模式，则不执行任何操作
     if not target_group_id:
-        # (可选) 您可以取消注释下面这行，让机器人在未设置时提醒您
-        # await update.message.reply_text("ℹ️ 您没有设置自动转发目标。\n使用 `/set <别名>` 来设置一个。")
         return
 
     logger.info(f"正在自动复制消息到 {target_alias} ({target_group_id})")
 
     try:
-        # 核心：使用 copy_message 匿名复制所有内容 (文字/图片/文件等)
-        # 这会完美地复制消息，但去除所有发送者信息
         await context.bot.copy_message(
             chat_id=target_group_id,
             from_chat_id=update.message.chat_id,
             message_id=update.message.message_id
         )
-        # (可选) 给管理员一个安静的确认 (例如编辑一条消息或什么都不做)
-        # 为避免刷屏，我们不在这里回复 "发送成功"
         
     except TelegramError as e:
         logger.error(f"自动复制到 {target_alias} 失败: {e}")
@@ -207,9 +177,7 @@ async def modal_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"发生意外错误: {e}")
         await update.message.reply_text(f"❌ 发生未知错误: {e}")
 
-# --- 主函数 ---
 def main() -> None:
-    """启动机器人"""
     
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -221,20 +189,15 @@ def main() -> None:
 
     application = Application.builder().token(token).build()
     
-    # 将解析好的 group_map 存入 bot_data，供所有处理器使用
     application.bot_data['group_map'] = group_map
 
-    # 注册命令处理器 (私聊)
     application.add_handler(CommandHandler("start", start, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("set", set_target_group, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("who", who_is_target, filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("to", fire_and_forget_text, filters.ChatType.PRIVATE))
     
-    # 注册群组命令
     application.add_handler(CommandHandler("getid", get_group_id, filters.ChatType.GROUP | filters.ChatType.SUPERGROUP))
 
-    # 注册核心消息处理器 (私聊，非命令)
-    # 这会捕获所有不是命令的私聊消息 (文字, 图片, 文件, 贴纸等)
     application.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & ~filters.COMMAND,
         modal_relay_handler
