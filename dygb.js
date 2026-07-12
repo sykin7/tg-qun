@@ -1,17 +1,31 @@
+// 限流防线回归纯内存 Map 吞吐
 const userCache = new Map();
 
-// 👑 完美复位：回归最精简、可读性最高的 24 小时自净空菜单内存锁，彻底剔除死代码
 const menuCache = new Map();
-
-// 👑 工业规范：保持最完美的绝对 TTL 与单用户独占定时器自净空订阅缓存沙盒，成功缓存 60 秒，失败仅留存 5 秒
 const subCache = new Map();
 
-// 👑 全局常驻缓存：Bot Username 只要抓取一次便永久封存，彻底消灭重复调取 getMe 的 API 浪费
-let botUsernameCache = null;
+// 全局首发固化高性能单例时钟实例
+const bjsFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false
+});
 
-let memoryRulesCache = null;
+let botUsernameCache = null;
+let botUsernamePromise = null;
+
+// 设立由 KV 触发机制维护的一级常驻主哈希表
+let memoryRulesCache = null; 
+let memoryRulesMap = new Map(); 
 let memoryRulesTime = 0;
-let memoryBlacklistCache = null;
+
+let memoryBlacklistCache = null; 
+let memoryBlacklistSet = new Set(); 
 let memoryBlacklistTime = 0;
 
 export default {
@@ -28,7 +42,6 @@ export default {
           const chatId = update.message.chat.id;
           const isAdmin = String(chatId) === String(env.ADMIN_ID).trim();
           
-          // 👑 剥离 /help 和 /manage 的菜单刷榜！只有在 /start 唤醒引导时才进行身份探测与菜单写入，降维节省网络开销
           if (update.message.text === "/start") {
             ctx.waitUntil(setupDynamicMenu(chatId, isAdmin, env.BOT_TOKEN));
           }
@@ -38,42 +51,34 @@ export default {
           const chatId = update.message.chat.id;
           const now = Date.now();
           
-          if (env.TG_LIMIT_KV) {
-            const kvKey = `rate:${chatId}`;
-            let kvData = null;
-            try {
-              const rawData = await env.TG_LIMIT_KV.get(kvKey);
-              if (rawData) kvData = JSON.parse(rawData);
-            } catch (kvErr) {
-              console.error("KV rate read error:", kvErr);
+          // 🧠 概率随机主动扫描抽稀清理法（概率 1%），保持内存处于健康水位
+          if (Math.random() < 0.01) {
+            for (const [id, cacheItem] of menuCache.entries()) {
+              if (now >= cacheItem.expire) menuCache.delete(id);
             }
+            for (const [id, cacheItem] of subCache.entries()) {
+              if (now >= cacheItem.expire) subCache.delete(id);
+            }
+            for (const [id, cacheItem] of userCache.entries()) {
+              if (now >= cacheItem.expire) userCache.delete(id);
+            }
+          }
 
-            // 👑 限流熔断阈值放宽至 count > 3，完美兼容手机端高频连点带来的客户端网络并发，体验极度舒适
-            if (!kvData || (now - kvData.lastTime >= 1000)) {
-              kvData = { lastTime: now, count: 1 };
-            } else {
-              kvData.count += 1;
-              if (kvData.count > 3) {
-                console.warn(`[KV Limit] User ${chatId} throttled.`);
+          // 极致性能的纯内存 Map 防刷漏斗
+          const uCache = userCache.get(chatId);
+          if (uCache && now < uCache.expire) {
+            if (now - uCache.lastTime < 1000) {
+              uCache.count += 1;
+              if (uCache.count > 3) {
+                console.warn(`[Rate Limit] Throttled user ${chatId} in memory.`);
                 return new Response("OK"); 
               }
-              kvData.lastTime = now;
-            }
-            ctx.waitUntil(env.TG_LIMIT_KV.put(kvKey, JSON.stringify(kvData), { expirationTtl: 60 }));
-          } else {
-            if (userCache.has(chatId)) {
-              const userData = userCache.get(chatId);
-              if (now - userData.lastTime < 1000) {
-                userData.count += 1;
-                if (userData.count > 3) return new Response("OK");
-              } else {
-                userData.count = 1; 
-              }
-              userData.lastTime = now;
             } else {
-              userCache.set(chatId, { lastTime: now, count: 1 });
-              setTimeout(() => { userCache.delete(chatId); }, 3000);
+              uCache.count = 1;
             }
+            uCache.lastTime = now;
+          } else {
+            userCache.set(chatId, { lastTime: now, count: 1, expire: now + 3000 });
           }
 
           ctx.waitUntil(handlePrivateMessage(update.message, env, ctx));
@@ -87,8 +92,8 @@ export default {
 };
 
 async function setupDynamicMenu(chatId, isAdmin, token) {
-  // 👑 完美复位：如果 Map 里已经有该用户的菜单记录，直接无感 return 强行拦截，不再往下走任何无谓逻辑
-  if (menuCache.has(chatId)) return;
+  const cache = menuCache.get(chatId);
+  if (cache && cache.expire > Date.now()) return;
 
   try {
     if (isAdmin) {
@@ -110,19 +115,35 @@ async function setupDynamicMenu(chatId, isAdmin, token) {
       });
     }
     
-    // 👑 终极精简：彻底拿掉无效的 oldMenu 判定和不具备复用价值的 timer 对象包装，回归最纯粹、性能最优的小白式代码
-    menuCache.set(chatId, true);
-    setTimeout(() => {
-      menuCache.delete(chatId);
-    }, 24 * 3600 * 1000);
+    menuCache.set(chatId, {
+      expire: Date.now() + 24 * 3600 * 1000
+    });
 
   } catch (err) {
     console.error("Dynamic menu scope matching error:", err);
   }
 }
 
+async function getBotUsername(env) {
+  if (botUsernameCache) return botUsernameCache;
+
+  if (!botUsernamePromise) {
+    botUsernamePromise = telegramApi(env.BOT_TOKEN, "getMe")
+      .then(info => {
+        botUsernameCache = info.username;
+        botUsernamePromise = null; 
+        return botUsernameCache;
+      })
+      .catch(err => {
+        botUsernamePromise = null; 
+        throw err;
+      });
+  }
+  return botUsernamePromise;
+}
+
 function escapeHtml(str) {
-  if (!str) return "";
+  if (typeof str !== "string") return "";
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -162,7 +183,8 @@ async function handlePrivateMessage(message, env, ctx) {
       } else {
         try {
           const rawBlacklist = await env.TG_LIMIT_KV.get("BLACKLIST_USERS");
-          if (rawBlacklist) blacklist = JSON.parse(rawBlacklist);
+          // 👑 完美修正：融入三元断言，当KV被整体删空时，无缝同步清洗内存，阻断脏读死锁
+          blacklist = rawBlacklist ? JSON.parse(rawBlacklist) : [];
         } catch (e) {
           blacklist = [];
         }
@@ -175,9 +197,11 @@ async function handlePrivateMessage(message, env, ctx) {
         }
         memoryBlacklistCache = blacklist;
         memoryBlacklistTime = now;
+        memoryBlacklistSet = new Set(blacklist.map(id => String(id)));
+
         await telegramApi(env.BOT_TOKEN, "sendMessage", {
           chat_id: chatId,
-          text: `🚫 <b>拉黑成功！</b>\n\n用户 ID <code>${escapeHtml(targetId)}</code> 已被关进小黑屋，彻底丧失获取节点的权限。`,
+          text: `🚫 <b>拉黑成功！</b>\n\n用户 ID <code>${escapeHtml(targetId)}</code> 已变入小黑屋，彻底丧失获取节点的权限。`,
           parse_mode: "HTML"
         });
       } else {
@@ -185,6 +209,8 @@ async function handlePrivateMessage(message, env, ctx) {
         await env.TG_LIMIT_KV.put("BLACKLIST_USERS", JSON.stringify(blacklist));
         memoryBlacklistCache = blacklist;
         memoryBlacklistTime = now;
+        memoryBlacklistSet = new Set(blacklist.map(id => String(id)));
+
         await telegramApi(env.BOT_TOKEN, "sendMessage", {
           chat_id: chatId,
           text: `🔓 <b>解封成功！</b>\n\n用户 ID <code>${escapeHtml(targetId)}</code> 已被移出黑名单，恢复正常使用权限。`,
@@ -200,7 +226,8 @@ async function handlePrivateMessage(message, env, ctx) {
     } else {
       try {
         const rawRules = await env.TG_LIMIT_KV.get("DYNAMIC_NODE_RULES");
-        if (rawRules) currentRules = JSON.parse(rawRules);
+        // 👑 完美修正：动态管理时同步并入三元判定，确保添加/删除时底层数组永远逻辑统一
+        currentRules = rawRules ? JSON.parse(rawRules) : [];
       } catch (e) {
         currentRules = [];
       }
@@ -228,6 +255,7 @@ async function handlePrivateMessage(message, env, ctx) {
       await env.TG_LIMIT_KV.put("DYNAMIC_NODE_RULES", JSON.stringify(currentRules));
       memoryRulesCache = currentRules;
       memoryRulesTime = now;
+      memoryRulesMap = new Map(currentRules.map(r => [r.keywords.toLowerCase(), r]));
 
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
         chat_id: chatId,
@@ -237,11 +265,7 @@ async function handlePrivateMessage(message, env, ctx) {
 
       ctx.waitUntil((async () => {
         try {
-          if (!botUsernameCache) {
-            const botInfo = await telegramApi(env.BOT_TOKEN, "getMe");
-            botUsernameCache = botInfo.username;
-          }
-          const botUsername = botUsernameCache;
+          const botUsername = await getBotUsername(env);
           
           const cleanKeywords = escapeHtml(keywords);
           const cleanMemo = escapeHtml(customMemo);
@@ -291,6 +315,7 @@ async function handlePrivateMessage(message, env, ctx) {
         await env.TG_LIMIT_KV.put("DYNAMIC_NODE_RULES", JSON.stringify(currentRules));
         memoryRulesCache = currentRules;
         memoryRulesTime = now;
+        memoryRulesMap = new Map(currentRules.map(r => [r.keywords.toLowerCase(), r]));
 
         await telegramApi(env.BOT_TOKEN, "sendMessage", {
           chat_id: chatId,
@@ -311,6 +336,8 @@ async function handlePrivateMessage(message, env, ctx) {
           await env.TG_LIMIT_KV.put("DYNAMIC_NODE_RULES", JSON.stringify(currentRules));
           memoryRulesCache = currentRules;
           memoryRulesTime = now;
+          memoryRulesMap = new Map(currentRules.map(r => [r.keywords.toLowerCase(), r]));
+
           await telegramApi(env.BOT_TOKEN, "sendMessage", {
             chat_id: chatId,
             text: `🗑️ <b>删除成功！</b>\n\n已通过匹配关键词彻底移除规则。`,
@@ -333,12 +360,16 @@ async function handlePrivateMessage(message, env, ctx) {
     }
 
     let currentRules = [];
-    if (memoryRulesCache && (now - memoryRulesTime < 15000)) {
+    if (memoryRulesCache && (now - memoryRulesTime < 60000)) {
       currentRules = memoryRulesCache;
     } else if (env.TG_LIMIT_KV) {
       try {
         const rawRules = await env.TG_LIMIT_KV.get("DYNAMIC_NODE_RULES");
-        if (rawRules) currentRules = JSON.parse(rawRules);
+        // 👑 完美修正：控制面板开闸查询时同步融入三元判定，将清空状态的同步彻底规范化
+        currentRules = rawRules ? JSON.parse(rawRules) : [];
+        memoryRulesCache = currentRules;
+        memoryRulesTime = now;
+        memoryRulesMap = new Map(currentRules.map(r => [r.keywords.toLowerCase(), r]));
       } catch (e) {
         currentRules = [];
       }
@@ -346,45 +377,40 @@ async function handlePrivateMessage(message, env, ctx) {
 
     let rulesListText = "";
     if (currentRules.length === 0) {
-      rulesListText = "<i>(当前 KV 数据库中空空如也，未存储任何动态规则)</i>";
+      rulesListText = "<i>(暂无动态规则，请使用下方模板添加)</i>\n\n";
     } else {
       currentRules.forEach((rule, i) => {
         const escapedKey = escapeHtml(rule.keywords);
         const escapedMemo = escapeHtml(rule.customMemo);
-        rulesListText += `<b>${i + 1}.</b> 🔑 <code>${escapedKey}</code> [${escapedMemo}]\n`;
+        rulesListText += `<b>${i + 1}.</b> <code>${escapedKey}</code>\n<blockquote>└ ${escapedMemo}</blockquote>`;
       });
     }
 
-    if (!botUsernameCache) {
-      const botInfo = await telegramApi(env.BOT_TOKEN, "getMe");
-      botUsernameCache = botInfo.username;
-    }
-    const myBotUrl = `https://t.me/${botUsernameCache}`;
+    const botUsername = await getBotUsername(env);
+    const myBotUrl = `https://t.me/${botUsername}`;
 
     const manageText = 
-      `🛠️ <b>【老板专属后台动态管理系统】</b>\n\n` +
-      `🔍 <b>【当前 KV 数据库规则盘点明细】</b>\n` +
+      `🛠️ <b>管理控制台</b>\n\n` +
+      `📊 <b>当前 KV 数据库规则明细：</b>\n\n` +
       `${rulesListText}\n` +
       `━━━━━━━━━━━━━━━\n` +
-      `📥 <b>[小白式精细控制模板（点击即可自动复制）]</b>\n\n` +
-      `<b>1️⃣ 快捷添加/更新【文字节点】</b>\n` +
-      `<code>添加#香港节点#香港专线#香港专线节点已更新\n\nvmess://xxxxxx</code>\n\n` +
-      `<b>2️⃣ 快捷添加/链接【网页遮罩】</b>\n` +
-      `<code>添加#https://t.me/your_qun#💬 点击加入技术交流群#欢迎加入官方群组交流！</code>\n\n` +
-      `<b>3️⃣ 快捷添加/广播【纯文字公告】</b>\n` +
-      `<code>添加#${myBotUrl}#📢 官方全新升级公告#感谢大家支持，本系统已完成高并发架构升级！</code>\n\n` +
-      `<b>4️⃣ 快捷添加/展示【海报图文大图】</b>\n` +
-      `<code>添加#https://t.me/xqkin/123#🖼️ 查看活动海报详情#🎁 欢迎参加特惠活动！优惠码：LUCK666</code>\n\n` +
+      `📥 <b>快捷管理指令模板 (一键秒触复制)：</b>\n\n` +
+      `• <b>添加/更新任意文本或配置节点</b>\n` +
+      `<code>添加#香港节点#香港专线#这里填写真实节点或任意回复内容</code>\n\n` +
+      `• <b>添加网页绿色遮罩引流</b>\n` +
+      `<code>添加#https://t.me/yourgroup#交流群#欢迎加入官方群组！</code>\n\n` +
+      `• <b>添加机器人公告引流</b>\n` +
+      `<code>添加#${myBotUrl}#官方公告#本系统已完成架构升级！</code>\n\n` +
+      `• <b>添加海报图文大图引流</b>\n` +
+      `<code>添加#https://t.me/xqkin/123#查看海报#欢迎参加特惠活动！</code>\n\n` +
       `━━━━━━━━━━━━━━━\n` +
-      `🗑️ <b>[选择性精准删除控制（点击自动复制）]</b>\n` +
-      `• <b>按上方列表的数字编号精准删除：</b>\n` +
-      `<code>删除#1</code>\n` +
-      `• <b>按触发关键词直接匹配删除：</b>\n` +
-      `<code>删除#香港节点</code>\n\n` +
-      `🚫 <b>[黑名单管控模块（点击自动复制）]</b>\n` +
-      `• <b>拉黑账户</b>：<code>拉黑#用户纯数字ID</code>\n` +
-      `• <b>解除封禁</b>：<code>解黑#用户纯数字ID</code>\n\n` +
-      `💡 <i>小白技巧提示：点击上面的每一行灰色代码块都能直接复制。如对规则进行了增删，再次发送 /manage 指令就能看到最新的盘点账单列表！</i>`;
+      `🗑️ <b>选择性精准删除：</b>\n` +
+      `• 依据列表编号：<code>删除#1</code>\n` +
+      `• 依据触发词条：<code>删除#香港节点</code>\n\n` +
+      `🚫 <b>全局黑名单管控：</b>\n` +
+      `• 拉黑用户：<code>拉黑#用户纯数字ID</code>\n` +
+      `• 解除封禁：<code>解黑#用户纯数字ID</code>\n\n` +
+      `💡 <i>提示：修改规则后重新发送 /manage 即可刷新列表。</i>`;
 
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
@@ -395,57 +421,47 @@ async function handlePrivateMessage(message, env, ctx) {
     return;
   }
 
-  if (env.TG_LIMIT_KV) {
-    let blacklist = [];
-    if (memoryBlacklistCache && (now - memoryBlacklistTime < 15000)) {
-      blacklist = memoryBlacklistCache;
-    } else {
-      try {
-        const rawBlacklist = await env.TG_LIMIT_KV.get("BLACKLIST_USERS");
-        if (rawBlacklist) {
-          blacklist = JSON.parse(rawBlacklist);
-          memoryBlacklistCache = blacklist;
-          memoryBlacklistTime = now;
-        }
-      } catch (e) {
-        console.error("Blacklist KV read error:", e);
-        if (memoryBlacklistCache) blacklist = memoryBlacklistCache;
-      }
-    }
-
-    if (blacklist.includes(String(chatId))) {
-      await telegramApi(env.BOT_TOKEN, "sendMessage", {
-        chat_id: chatId,
-        text: "⛔ <b>访问受限</b>\n\n由于系统检测到您的账户存在异常高频请求或其他违规行为，当前已被限制获取节点信息。如有疑问请联系管理员。",
-        parse_mode: "HTML"
-      });
-      return;
+  // 二级缓存查闸拦截
+  if (env.TG_LIMIT_KV && (!memoryBlacklistCache || (now - memoryBlacklistTime >= 60000))) {
+    try {
+      const rawBlacklist = await env.TG_LIMIT_KV.get("BLACKLIST_USERS");
+      // 👑 完美修正：黑名单开闸探测同步融入三元判定，斩断黑名单被人工置空后的脏读隐患
+      const blacklist = rawBlacklist ? JSON.parse(rawBlacklist) : [];
+      memoryBlacklistCache = blacklist;
+      memoryBlacklistTime = now;
+      memoryBlacklistSet = new Set(blacklist.map(id => String(id)));
+    } catch (e) {
+      console.error("Async context refresh blacklist fail:", e);
     }
   }
 
-  // 👑 终极飞升：保持最完美的绝对 TTL 与单用户独占定时器自净空沙盒，成功缓存 60 秒，失败仅留存 5 秒
+  if (memoryBlacklistSet.has(String(chatId))) {
+    await telegramApi(env.BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: "⛔ <b>访问受限</b>\n\n由于系统检测到您的账户存在异常高频请求或其他违规行为，当前已被限制获取节点信息。如有疑问请联系管理员。",
+      parse_mode: "HTML"
+    });
+    return;
+  }
+
   let isSubscribed = false;
-  const cache = subCache.get(chatId);
+  const subCacheItem = subCache.get(chatId);
   
-  if (cache && now < cache.expire) {
-    isSubscribed = cache.status;
-  } else {
-    isSubscribed = await checkChannelSubscription(chatId, env);
-    
-    const ttl = isSubscribed ? 60000 : 5000;
-    
-    if (cache?.timer) {
-      clearTimeout(cache.timer);
+  if (subCacheItem) {
+    if (now < subCacheItem.expire) {
+      isSubscribed = subCacheItem.status;
+    } else {
+      subCache.delete(chatId); 
     }
-    
-    const timer = setTimeout(() => {
-      subCache.delete(chatId);
-    }, ttl);
+  }
+
+  if (!subCacheItem || now >= subCacheItem.expire) {
+    isSubscribed = await checkChannelSubscription(chatId, env);
+    const ttl = isSubscribed ? 60000 : 5000;
     
     subCache.set(chatId, {
       status: isSubscribed,
-      expire: now + ttl,
-      timer
+      expire: now + ttl
     });
   }
 
@@ -475,7 +491,7 @@ async function handlePrivateMessage(message, env, ctx) {
       "• 发送 <code>/help</code> 重新查看此指南\n\n" +
       "2️⃣ <b>如何使用节点？</b>\n" +
       "• 机器人发给你的节点链接，<b>直接点击即可自动复制</b>。\n" +
-      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可完成配置。\n\n" +
+      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可完成配置。\n" +
       "3️⃣ <b>节点失效/无法使用怎么办？</b>\n" +
       "如果遇到节点不可用，请直接点击下方按钮联系管理员，我会第一时间进行修复！\n" +
       "━━━━━━━━━━━━━━━";
@@ -493,27 +509,22 @@ async function handlePrivateMessage(message, env, ctx) {
     return;
   }
 
-  let RULES = [];
-  if (env.TG_LIMIT_KV) {
-    if (memoryRulesCache && (now - memoryRulesTime < 15000)) {
-      RULES = memoryRulesCache;
-    } else {
-      try {
-        const rawRules = await env.TG_LIMIT_KV.get("DYNAMIC_NODE_RULES");
-        if (rawRules) {
-          RULES = JSON.parse(rawRules);
-          memoryRulesCache = RULES;
-          memoryRulesTime = now;
-        }
-      } catch (e) {
-        console.error("Rules KV read error:", e);
-        if (memoryRulesCache) RULES = memoryRulesCache;
-      }
+  if (env.TG_LIMIT_KV && (!memoryRulesCache || (now - memoryRulesTime >= 60000))) {
+    try {
+      const rawRules = await env.TG_LIMIT_KV.get("DYNAMIC_NODE_RULES");
+      // 👑 完美修正：普通发词时同步融入三元判定，完成全链路状态自愈
+      const RULES = rawRules ? JSON.parse(rawRules) : [];
+      memoryRulesCache = RULES;
+      memoryRulesTime = now;
+      memoryRulesMap = new Map(RULES.map(r => [r.keywords.toLowerCase(), r]));
+    } catch (e) {
+      console.error("Async context refresh rules fail:", e);
     }
   }
 
-  if (RULES.length === 0 && env.NODE_RULES) {
+  if (memoryRulesMap.size === 0 && env.NODE_RULES) {
     const lines = env.NODE_RULES.split('\n');
+    const backupRules = [];
     for (const line of lines) {
       const trimmedLine = line.trim();
       if (!trimmedLine) continue;
@@ -521,62 +532,53 @@ async function handlePrivateMessage(message, env, ctx) {
       if (separatorIndex > -1) {
         const keywords = trimmedLine.substring(0, separatorIndex).trim();
         const response = trimmedLine.substring(separatorIndex + 3).trim();
-        if (keywords && response) RULES.push({ keywords, response, customMemo: "🔗 [点击查看详情]" });
+        if (keywords && response) backupRules.push({ keywords, response, customMemo: "🔗 [点击查看详情]" });
       }
     }
+    memoryRulesMap = new Map(backupRules.map(r => [r.keywords.toLowerCase(), r]));
   }
 
-  const userQuery = text.toLowerCase();
-  for (const rule of RULES) {
-    if (userQuery === rule.keywords.toLowerCase()) {
-      const formattedResponse = rule.response.replace(/\\n/g, '\n');
-      await telegramApi(env.BOT_TOKEN, "sendMessage", {
-        chat_id: chatId,
-        text: formattedResponse,
-        parse_mode: "HTML"
-      });
+  const matchedRule = memoryRulesMap.get(text.toLowerCase());
 
-      if (!isAdmin) {
-        ctx.waitUntil((async () => {
-          try {
-            const rawFirstName = message.from.first_name || "";
-            const rawLastName = message.from.last_name || "";
-            const username = message.from.username ? `@${message.from.username}` : "无用户名";
-            
-            const cleanName = escapeHtml(`${rawFirstName} ${rawLastName}`.trim()) || "未知昵称";
-            
-            const timeString = new Intl.DateTimeFormat("zh-CN", {
-              timeZone: "Asia/Shanghai",
-              year: "numeric",
-              month: "2-digit",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-              hour12: false
-            }).format(new Date());
+  if (matchedRule) {
+    const formattedResponse = matchedRule.response.replace(/\\n/g, '\n');
+    await telegramApi(env.BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: formattedResponse,
+      parse_mode: "HTML"
+    });
 
-            const adminNotice = 
-              `📢 <b>老板，有用户成功获取了节点！</b>\n\n` +
-              `👤 <b>用户昵称</b>：${cleanName}\n` +
-              `🆔 <b>用户账号</b>：<code>${message.from.id}</code> (${username})\n` +
-              `🔑 <b>触发词条</b>：<code>${escapeHtml(rule.keywords)}</code>\n` +
-              `🔍 <b>保存备注</b>：<code>${escapeHtml(rule.customMemo || "无")}</code>\n` +
-              `⏱️ <b>获取时间</b>：${timeString} (北京时间)\n\n` +
-              `💡 <i>提示：若此用户恶意刷屏，长按复制其账号 ID 后发送「拉黑#用户ID」即可将其永久封禁。</i>`;
+    if (!isAdmin) {
+      ctx.waitUntil((async () => {
+        try {
+          const rawFirstName = message.from.first_name || "";
+          const rawLastName = message.from.last_name || "";
+          const username = message.from.username ? `@${message.from.username}` : "无用户名";
+          
+          const cleanName = escapeHtml(`${rawFirstName} ${rawLastName}`.trim()) || "未知昵称";
+          
+          const timeString = bjsFormatter.format(new Date());
 
-            await telegramApi(env.BOT_TOKEN, "sendMessage", {
-              chat_id: env.ADMIN_ID,
-              text: adminNotice,
-              parse_mode: "HTML"
-            });
-          } catch (err) {
-            console.error("Failed to push log to admin:", err);
-          }
-        })());
-      }
-      return;
+          const adminNotice = 
+            `📢 <b>老板，有用户成功获取了节点！</b>\n\n` +
+            `👤 <b>用户昵称</b>：${cleanName}\n` +
+            `🆔 <b>用户账号</b>：<code>${message.from.id}</code> (${username})\n` +
+            `🔑 <b>触发关键词</b>：<code>${escapeHtml(matchedRule.keywords)}</code>\n` +
+            `🔍 <b>保存备注</b>：<code>${escapeHtml(matchedRule.customMemo || "无")}</code>\n` +
+            `⏱️ <b>获取时间</b>：${timeString} (北京时间)\n\n` +
+            `💡 <i>提示：若此用户恶意刷屏，长按复制其账号 ID 后发送「拉黑#用户ID」即可将其永久封禁。</i>`;
+
+          await telegramApi(env.BOT_TOKEN, "sendMessage", {
+            chat_id: env.ADMIN_ID,
+            text: adminNotice,
+            parse_mode: "HTML"
+          });
+        } catch (err) {
+          console.error("Failed to push log to admin:", err);
+        }
+      })());
     }
+    return;
   }
 
   await telegramApi(env.BOT_TOKEN, "sendMessage", {
@@ -584,20 +586,6 @@ async function handlePrivateMessage(message, env, ctx) {
     text: "❓ <b>未找到匹配的节点内容。</b>\n\n请检查您的关键词是否正确，或者发送 /help 查看指南。",
     parse_mode: "HTML"
   });
-}
-
-async function checkChannelSubscription(userId, env) {
-  try {
-    const res = await telegramApi(env.BOT_TOKEN, "getChatMember", {
-      chat_id: env.CHANNEL_ID,
-      user_id: userId
-    });
-    const validStatuses = ["creator", "administrator", "member", "restricted"];
-    return validStatuses.includes(res.status);
-  } catch (e) {
-    console.error("Critical: Failed to verify channel membership:", e);
-    return false;
-  }
 }
 
 async function telegramApi(token, methodName, params = {}) {
@@ -631,6 +619,11 @@ async function telegramApi(token, methodName, params = {}) {
       throw new Error(`${methodName} API Execution Failed:${data.description}`);
     }
     return data.result;
+  } catch (apiErr) {
+    if (apiErr.name === "AbortError") {
+      throw new Error(`[Timeout Alert] Telegram API 请求超时，8秒内网关未给予业务层响应，已执行硬熔断自救。`);
+    }
+    throw apiErr;
   } finally {
     clearTimeout(timeout);
   }
