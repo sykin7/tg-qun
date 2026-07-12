@@ -29,7 +29,21 @@ export default {
           const now = Date.now();
           
           if (env.TG_LIMIT_KV) {
-            const kvKey = `rate:${chatId}`;             let kvData = null;             try {               const rawData = await env.TG_LIMIT_KV.get(kvKey);               if (rawData) kvData = JSON.parse(rawData);             } catch (kvErr) {               console.error("KV read error:", kvErr);             }              if (!kvData \vert{}\vert{} (now - kvData.lastTime >= 1000)) {               kvData = { lastTime: now, count: 1 };             } else {               kvData.count += 1;               if (kvData.count > 2) {                 console.warn(`[KV Limit] User ${chatId} throttled.`);
+            const kvKey = `rate:${chatId}`;
+            let kvData = null;
+            try {
+              const rawData = await env.TG_LIMIT_KV.get(kvKey);
+              if (rawData) kvData = JSON.parse(rawData);
+            } catch (kvErr) {
+              console.error("KV read error:", kvErr);
+            }
+
+            if (!kvData || (now - kvData.lastTime >= 1000)) {
+              kvData = { lastTime: now, count: 1 };
+            } else {
+              kvData.count += 1;
+              if (kvData.count > 2) {
+                console.warn(`[KV Limit] User ${chatId} throttled.`);
                 return new Response("OK"); 
               }
               kvData.lastTime = now;
@@ -296,7 +310,7 @@ async function handlePrivateMessage(message, env, ctx) {
       "• 发送 `帮助` 重新查看此指南\n\n" +
       "2️⃣ **如何使用节点？**\n" +
       "• 机器人发给你的节点链接，**直接点击即可自动复制**。\n" +
-      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可完成配置。\n\n" +
+      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可完成配置。\n" +
       "3️⃣ **节点失效/无法使用怎么办？**\n" +
       "如果遇到节点不可用，请直接点击下方按钮联系管理员，我会第一时间进行修复！\n" +
       "━━━━━━━━━━━━━━━";
@@ -362,7 +376,7 @@ async function handlePrivateMessage(message, env, ctx) {
             const firstName = message.from.first_name || "";
             const lastName = message.from.last_name || "";
             const username = message.from.username ? `@${message.from.username}` : "无用户名";
-            const userDisplayName = `${firstName} ${lastName}`.trim() || "未知昵称";
+            const userDisplayName = `${firstName}${lastName}`.trim() || "未知昵称";
             
             const timeString = new Date(Date.now() + 8 * 3600000).toISOString()
               .replace('T', ' ')
