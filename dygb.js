@@ -132,6 +132,7 @@ async function handlePrivateMessage(message, env, ctx) {
       } catch (e) {
         blacklist = [];
       }
+      if (!Array.isArray(blacklist)) blacklist = [];
 
       if (text.startsWith("拉黑#")) {
         if (!blacklist.includes(targetId)) {
@@ -166,6 +167,7 @@ async function handlePrivateMessage(message, env, ctx) {
     } catch (e) {
       currentRules = [];
     }
+    if (!Array.isArray(currentRules)) currentRules = [];
 
     if (text.startsWith("添加#")) {
       const parts = text.split("#");
@@ -217,7 +219,7 @@ async function handlePrivateMessage(message, env, ctx) {
           const channelNotice = 
             `📢 <b>【系统专属分发动态上新】</b>\n\n` +
             `⚡ 刚刚为您上新/优化了 ${displayTag} 相关的专属获取规则！\n\n` +
-            `🔒 <i>提示：敏感节点 data、内部私密网站以及福利文本已全部进行加密与安全脱敏隐藏。</i>\n\n` +
+            `🔒 <i>提示：敏感节点数据、内部私密网站以及福利文本已全部进行加密与安全脱敏隐藏。</i>\n\n` +
             `💬 想要提取相关福利与线路的同学，请点击下方链接直达机器人私聊，并在对话框中发送对应的触发词：\n\n` +
             `👉 <code>${cleanKeywords}</code>\n\n` +
             `🔗 <a href="https://t.me/${botUsername}">🚀 [点击此处一键直达私聊解锁提取]</a>`;
@@ -237,27 +239,43 @@ async function handlePrivateMessage(message, env, ctx) {
     }
 
     if (text.startsWith("删除#")) {
-      const keywords = text.split("#")[1].trim();
-      if (!keywords) return;
+      const deleteParam = text.split("#")[1].trim();
+      if (!deleteParam) return;
 
-      const beforeLength = currentRules.length;
-      currentRules = currentRules.filter(r => r.keywords.toLowerCase() !== keywords.toLowerCase());
+      const index = parseInt(deleteParam, 10) - 1;
 
-      if (currentRules.length === beforeLength) {
-        await telegramApi(env.BOT_TOKEN, "sendMessage", {
-          chat_id: chatId,
-          text: `⚠️ **未找到对应的关键词**：\`${keywords}\``,
-          parse_mode: "Markdown"
-        });
-      } else {
+      if (!isNaN(index) && index >= 0 && index < currentRules.length) {
+        const removedRule = currentRules[index];
+        currentRules.splice(index, 1);
         await env.TG_LIMIT_KV.put("DYNAMIC_NODE_RULES", JSON.stringify(currentRules));
         memoryRulesCache = currentRules;
         memoryRulesTime = now;
+
         await telegramApi(env.BOT_TOKEN, "sendMessage", {
           chat_id: chatId,
-          text: `🗑️ **删除成功！**\n\n已从数据库中彻底移除关键词为 \`${keywords}\` 的节点规则。`,
+          text: `🗑️ **精准选择性删除成功！**\n\n已彻底从数据库中移除规则：\n• **关键词**：\`${removedRule.keywords}\`\n• **备注**：\`${removedRule.customMemo}\``,
           parse_mode: "Markdown"
         });
+      } else {
+        const initialLength = currentRules.length;
+        currentRules = currentRules.filter(r => r.keywords.toLowerCase() !== deleteParam.toLowerCase());
+
+        if (currentRules.length === initialLength) {
+          await telegramApi(env.BOT_TOKEN, "sendMessage", {
+            chat_id: chatId,
+            text: `⚠️ **未找到对应的规则**\n\n输入的数字编号超出范围，或未匹配到关键词：\`${deleteParam}\``,
+            parse_mode: "Markdown"
+          });
+        } else {
+          await env.TG_LIMIT_KV.put("DYNAMIC_NODE_RULES", JSON.stringify(currentRules));
+          memoryRulesCache = currentRules;
+          memoryRulesTime = now;
+          await telegramApi(env.BOT_TOKEN, "sendMessage", {
+            chat_id: chatId,
+            text: `🗑️ **删除成功！**\n\n已通过匹配关键词彻底移除规则。`,
+            parse_mode: "Markdown"
+          });
+        }
       }
       return;
     }
@@ -273,26 +291,46 @@ async function handlePrivateMessage(message, env, ctx) {
       return;
     }
 
+    let currentRules = [];
+    if (env.TG_LIMIT_KV) {
+      try {
+        const rawRules = await env.TG_LIMIT_KV.get("DYNAMIC_NODE_RULES");
+        if (rawRules) currentRules = JSON.parse(rawRules);
+      } catch (e) {
+        currentRules = [];
+      }
+    }
+    if (!Array.isArray(currentRules)) currentRules = [];
+
+    let rulesListText = "";
+    if (currentRules.length === 0) {
+      rulesListText = "<i>(当前 KV 数据库中空空如也，未存储任何动态规则)</i>";
+    } else {
+      currentRules.forEach((rule, i) => {
+        const escapedKey = rule.keywords.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const escapedMemo = rule.customMemo.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        rulesListText += `<b>${i + 1}.</b> 🔑 <code>${escapedKey}</code> [${escapedMemo}]\n`;
+      });
+    }
+
     const manageText = 
-      "🛠️ **【老板专属后台动态管理系统】**\n\n" +
-      "请使用以下全新自由备注格式发送给机器人：\n\n" +
-      "📥 **[1. 快捷添加/更新节点模板]**\n" +
-      "`添加#香港节点#🇭🇰 香港专线#🇭🇰 **香港专线节点已更新**\\n\\n\`vmess://链接xxxxx#备注\``\n\n" +
-      "📥 **[2. 快捷添加/链接遮罩模板]**\n" +
-      "`添加#https://t.me/your_qun#💬 点击加入技术交流群#欢迎加入官方群组交流！`\n\n" +
-      "🗑️ **[3. 快捷下架/删除节点模板]**\n" +
-      "`删除#香港节点`\n\n" +
-      "🚫 **[4. 快捷拉黑恶意用户模板]**\n" +
-      "`拉黑#用户数字ID`\n\n" +
-      "🔓 **[5. 快捷解封黑名单用户模板]**\n" +
-      "`解黑#用户数字ID`\n\n" +
-      "━━━━━━━━━━━━━━━\n" +
-      "💡 *小白维护技巧：全新格式引入了第三个参数「频道显示的遮罩备注」，当第一个参数是网址时，频道里会直接把网址打包隐藏进你写的这个备注里，实现完美绿色遮罩！*";
+      `🛠️ <b>【老板专属后台动态管理系统】</b>\n\n` +
+      `🔍 <b>【当前 KV 数据库规则盘点明细】</b>\n` +
+      `${rulesListText}\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `📥 <b>[快捷维护控制模板]</b>\n` +
+      `• <b>添加/更新</b>：<code>添加#关键词或网址#频道显示的遮罩备注#真实内容</code>\n` +
+      `• <b>精准选择性删除</b>：<code>删除#数字编号</code> <i>(例：删除#1)</i>\n\n` +
+      `🚫 <b>[黑名单管控模块]</b>\n` +
+      `• <b>拉黑账户</b>：<code>拉黑#用户纯数字ID</code>\n` +
+      `• <b>解除封禁</b>：<code>解黑#用户纯数字ID</code>\n\n` +
+      `💡 <i>小白提示：点击列表中的编号或者控制模板即可自动复制。若列表里规则发生改变，再次发送 /manage 即可刷新列表账单。</i>`;
 
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
       text: manageText,
-      parse_mode: "Markdown"
+      parse_mode: "HTML",
+      disable_web_page_preview: true
     });
     return;
   }
@@ -314,6 +352,7 @@ async function handlePrivateMessage(message, env, ctx) {
         if (memoryBlacklistCache) blacklist = memoryBlacklistCache;
       }
     }
+    if (!Array.isArray(blacklist)) blacklist = [];
 
     if (blacklist.includes(String(chatId))) {
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
@@ -389,6 +428,7 @@ async function handlePrivateMessage(message, env, ctx) {
       }
     }
   }
+  if (!Array.isArray(RULES)) RULES = [];
 
   if (RULES.length === 0 && env.NODE_RULES) {
     const lines = env.NODE_RULES.split('\n');
