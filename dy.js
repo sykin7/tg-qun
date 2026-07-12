@@ -1,9 +1,8 @@
-// 在全局内存中开辟计数器，用于实施一秒2次的防刷熔断机制
+// 【局部内存计数器】—— 仅作为无 KV 绑定时的安全兜底
 const userCache = new Map();
 
 export default {
   async fetch(request, env, ctx) {
-    // 基础安全隔离：如果核心环境变量缺失，直接报错拦截
     if (!env.BOT_TOKEN || !env.CHANNEL_ID || !env.CHANNEL_LINK) {
       return new Response("Error: Critical environment variables are missing.", { status: 500 });
     }
@@ -12,36 +11,61 @@ export default {
       try {
         const update = await request.json();
         
-        // 严格限定：只处理私聊纯文本消息
         if (update.message && update.message.chat.type === "private" && update.message.text) {
           const chatId = update.message.chat.id;
           const now = Date.now();
           
-          // 🛡️ 核心防刷屏卡点：如果同一个用户在 1 秒（1000毫秒）内发送超过 2 次消息，直接对其熔断
-          if (userCache.has(chatId)) {
-            const userData = userCache.get(chatId);
-            if (now - userData.lastTime < 1000) {
-              userData.count += 1;
-              if (userData.count > 2) {
-                console.warn(`用户 ${chatId} 正在恶意刷屏，已被 Worker 强制熔断拦截。`);
-                return new Response("OK"); // 假动作响应 OK，但 CF 内部直接终止，绝不调取 Telegram API，省电省额度
-              }
+          // ==========================================
+          // 🛡️ 完美适配：分布式全局同步限流器 (KV 模式)
+          // ==========================================
+          // 如果你在 CF 后台绑定了名为 TG_LIMIT_KV 的空间，系统会自动平滑切换到最强防灾模式
+          if (env.TG_LIMIT_KV) {
+            const kvKey = `rate:${chatId}`;
+            let kvData = null;
+            
+            try {
+              // 从远程分布式 KV 中读取当前用户的发信记录
+              const rawData = await env.TG_LIMIT_KV.get(kvKey);
+              if (rawData) kvData = JSON.parse(rawData);
+            } catch (kvErr) {
+              console.error("读取 KV 失败，降级使用局部内存:", kvErr);
+            }
+
+            // 如果 KV 里面没有记录，或者距离上一次发信已经超过 1 秒，初始化计数
+            if (!kvData || (now - kvData.lastTime >= 1000)) {
+              kvData = { lastTime: now, count: 1 };
             } else {
-              userData.count = 1; // 超过 1 秒，重置计数
+              // 1 秒之内连续发信，计数器累加
+              kvData.count += 1;
+              if (kvData.count > 2) {
+                console.warn(`[KV 熔断] 用户 ${chatId} 触发全局分布式超频限制，直接抹杀请求。`);
+                return new Response("OK"); // 强行丢弃恶意刷屏请求
+              }
+              kvData.lastTime = now;
             }
-            userData.lastTime = now;
+
+            // 将最新计数异步写入 KV，并设置 60 秒后自动物理过期销毁，绝不堆积垃圾数据数据流
+            ctx.waitUntil(env.TG_LIMIT_KV.put(kvKey, JSON.stringify(kvData), { expirationTtl: 60 }));
           } else {
-            userCache.set(chatId, { lastTime: now, count: 1 }); // 新用户初始化
-          }
-
-          // 定期自动清理小黑屋内存，防止 Worker 运行内存溢出
-          if (userCache.size > 500) {
-            for (const [id, data] of userCache.entries()) {
-              if (now - data.lastTime > 5000) userCache.delete(id);
+            // ==========================================
+            // 🛡️ 兜底方案：局部内存限流器 (单实例模式)
+            // ==========================================
+            if (userCache.has(chatId)) {
+              const userData = userCache.get(chatId);
+              if (now - userData.lastTime < 1000) {
+                userData.count += 1;
+                if (userData.count > 2) return new Response("OK");
+              } else {
+                userData.count = 1; 
+              }
+              userData.lastTime = now;
+            } else {
+              userCache.set(chatId, { lastTime: now, count: 1 });
+              // 3 秒后必须自动从小黑屋抹除，防范隐患2内存堆积
+              setTimeout(() => { userCache.delete(chatId); }, 3000);
             }
           }
 
-          // 频率安全，放行进入核心订阅验证与业务分发逻辑
           ctx.waitUntil(handlePrivateMessage(update.message, env));
         }
       } catch (e) {
@@ -52,20 +76,16 @@ export default {
   }
 };
 
-// ==========================================
-// 核心业务处理逻辑（严格卡点）
-// ==========================================
 async function handlePrivateMessage(message, env) {
   const chatId = message.chat.id;
   const text = message.text.trim();
 
   if (!text) return;
 
-  // 🔒 第一道防线：强制订阅判定（核心卡点，未订阅或异常失败绝不放行）
+  // 🔒 第一道防线：强制订阅判定
   const isSubscribed = await checkChannelSubscription(chatId, env);
 
   if (!isSubscribed) {
-    // 未订阅用户，直接下发强力拦截文案及加入频道按钮
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
       text: "⚠️ **您需要先订阅我们的官方频道，才能使用自动回复功能！**\n\n订阅后，请返回此处重新发送您的关键词即可。",
@@ -76,10 +96,10 @@ async function handlePrivateMessage(message, env) {
         ]
       }
     });
-    return; // 强行阻断死锁，绝对无法向下运行
+    return;
   }
 
-  // 2. 已通过订阅验证，处理系统内置基础指令（小白指南与双向客服入口）
+  // 2. 基础内置指令
   if (text === "/start" || text === "/help") {
     const welcomeText = 
       "🎉 **身份验证成功！欢迎使用自动获取系统。**\n\n" +
@@ -92,9 +112,9 @@ async function handlePrivateMessage(message, env) {
       "• 发送 `帮助` 重新查看此指南\n\n" +
       "2️⃣ **如何使用节点？**\n" +
       "• 机器人发给你的节点链接，**直接点击即可自动复制**。\n" +
-      "• 复制后打开你的代理客户端（如 Clash / v2rayN / Shadowrocket），选择“从剪贴板导入”即可完成配置。\n\n" +
+      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可。\n\n" +
       "3️⃣ **节点失效/无法使用怎么办？**\n" +
-      "如果遇到节点不可用、网络波动或其它技术故障，请直接点击下方按钮联系管理员，我会第一时间进行修复！\n" +
+      "如果遇到节点不可用，请直接点击下方按钮联系管理员！\n" +
       "━━━━━━━━━━━━━━━";
 
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
@@ -110,15 +130,13 @@ async function handlePrivateMessage(message, env) {
     return;
   }
 
-  // ==========================================
-  // 📝 纯文本变量动态解析（一行一条，防崩溃过滤）
-  // ==========================================
+  // 3. 纯文本变量动态解析一条
   const RULES = [];
   if (env.NODE_RULES) {
     const lines = env.NODE_RULES.split('\n');
     for (const line of lines) {
       const trimmedLine = line.trim();
-      if (!trimmedLine) continue; // 过滤空行
+      if (!trimmedLine) continue;
 
       const separatorIndex = trimmedLine.indexOf('===');
       if (separatorIndex > -1) {
@@ -131,10 +149,8 @@ async function handlePrivateMessage(message, env) {
     }
   }
 
-  // 3. 稳妥的字符串包含匹配机制
   for (const rule of RULES) {
     if (text.toLowerCase().includes(rule.keywords.toLowerCase())) {
-      // 支持通过 \n 进行文本内换行解析
       const formattedResponse = rule.response.replace(/\\n/g, '\n');
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
         chat_id: chatId,
@@ -145,7 +161,6 @@ async function handlePrivateMessage(message, env) {
     }
   }
 
-  // 4. 未匹配到任何节点关键词的兜底回复
   await telegramApi(env.BOT_TOKEN, "sendMessage", {
     chat_id: chatId,
     text: "❓ **未找到匹配的节点内容。**\n\n请检查您的关键词是否正确，或者发送 `/help` 查看指南。",
@@ -153,28 +168,20 @@ async function handlePrivateMessage(message, env) {
   });
 }
 
-// ==========================================
-// 🛡️ 强制订阅安全性隔离函数
-// ==========================================
 async function checkChannelSubscription(userId, env) {
   try {
     const res = await telegramApi(env.BOT_TOKEN, "getChatMember", {
       chat_id: env.CHANNEL_ID,
       user_id: userId
     });
-    // 只有这三种状态属于有效订阅者：创建者、管理员、普通成员
     const validStatuses = ["creator", "administrator", "member"];
     return validStatuses.includes(res.status);
   } catch (e) {
-    // 安全加固：如果接口请求报错，一律视为未订阅（返回 false），严防异常绕过漏洞。
     console.error("Critical: Failed to verify channel membership:", e);
     return false;
   }
 }
 
-// ==========================================
-// Telegram API 请求封装
-// ==========================================
 async function telegramApi(token, methodName, params = {}) {
   const url = `https://api.telegram.org/bot${token}/${methodName}`;
   const response = await fetch(url, {
