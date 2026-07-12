@@ -10,6 +10,19 @@ export default {
       try {
         const update = await request.json();
         
+        // ==========================================
+        // 🔑 核心拦截升级：管理员与普通用户菜单动态身份隔离
+        // ==========================================
+        if (update.message && update.message.chat.type === "private") {
+          const chatId = update.message.chat.id;
+          const isAdmin = String(chatId) === String(env.ADMIN_ID).trim();
+          
+          // 利用异步等待机制，在用户初次唤醒或触发交互时，自动刷新其本地的菜单列表结构
+          if (update.message.text === "/start" || update.message.text === "/help" || update.message.text === "/manage") {
+            ctx.waitUntil(setupDynamicMenu(chatId, isAdmin, env.BOT_TOKEN));
+          }
+        }
+
         if (update.message && update.message.chat.type === "private" && update.message.text) {
           const chatId = update.message.chat.id;
           const now = Date.now();
@@ -61,6 +74,36 @@ export default {
   }
 };
 
+// ==========================================
+// 🛡️ 菜单隔离函数：精细控制不同用户的 Scope 菜单显示
+// ==========================================
+async function setupDynamicMenu(chatId, isAdmin, token) {
+  try {
+    if (isAdmin) {
+      // 老板专属高级菜单：包括普通指令 + 独占的管理指令
+      await telegramApi(token, "setMyCommands", {
+        commands: [
+          { command: "start", description: "🚀 唤醒并验证身份" },
+          { command: "help", description: "📖 查看节点获取指南" },
+          { command: "manage", description: "🛠️ 老板专属控制台" }
+        ],
+        scope: { type: "chat", chat_id: chatId }
+      });
+    } else {
+      // 普通用户低调菜单：只保留基本查询功能，彻底抹除管理入口
+      await telegramApi(token, "setMyCommands", {
+        commands: [
+          { command: "start", description: "🚀 唤醒并验证身份" },
+          { command: "help", description: "📖 查看节点获取指南" }
+        ],
+        scope: { type: "chat", chat_id: chatId }
+      });
+    }
+  } catch (err) {
+    console.error("Dynamic menu scope matching error:", err);
+  }
+}
+
 async function handlePrivateMessage(message, env) {
   const chatId = message.chat.id;
   const text = message.text.trim();
@@ -73,7 +116,7 @@ async function handlePrivateMessage(message, env) {
     if (!env.TG_LIMIT_KV) {
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
         chat_id: chatId,
-        text: "❌ **操作失败**\n\n动态管理节点功能**必须绑定 KV 命名空间**！请先去 Cloudflare 后台绑定 `TG_LIMIT_KV` 后再试。",
+        text: "❌ **操作失败**\n\n动态管理节点功能**必须绑定 KV 命名空间**！",
         parse_mode: "Markdown"
       });
       return;
@@ -140,6 +183,34 @@ async function handlePrivateMessage(message, env) {
     }
   }
 
+  if (text === "/manage") {
+    if (!isAdmin) {
+      await telegramApi(env.BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: "⛔ **权限拒绝**\n\n您不是本机器人的最高管理员，无权调用此控制面板。",
+        parse_mode: "Markdown"
+      });
+      return;
+    }
+
+    const manageText = 
+      "🛠️ **【老板专属后台动态管理系统】**\n\n" +
+      "请点击下方对应的代码块（点击即可自动复制模板），在对话框中修改后发送给机器人即可：\n\n" +
+      "📥 **[1. 快捷添加/更新节点模板]**\n" +
+      "`添加#香港节点#🇭🇰 **香港专线节点已更新**\\n\\n\`vmess://链接xxxxx#备注\``\n\n" +
+      "🗑️ **[2. 快捷下架/删除节点模板]**\n" +
+      "`删除#香港节点`\n\n" +
+      "━━━━━━━━━━━━━━━\n" +
+      "💡 *小白维护技巧：模板中的 `\\n` 代表换行，节点链接两端必须带有反引号 \` 才能让用户点击自动复制。*";
+
+    await telegramApi(env.BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: manageText,
+      parse_mode: "Markdown"
+    });
+    return;
+  }
+
   const isSubscribed = await checkChannelSubscription(chatId, env);
 
   if (!isSubscribed) {
@@ -157,7 +228,7 @@ async function handlePrivateMessage(message, env) {
   }
 
   if (text === "/start" || text === "/help") {
-    let welcomeText = 
+    const welcomeText = 
       "🎉 **身份验证成功！欢迎使用自动获取系统。**\n\n" +
       "━━━━━━━━━━━━━━━\n" +
       "📖 **【节点获取与使用指南】**\n\n" +
@@ -169,12 +240,6 @@ async function handlePrivateMessage(message, env) {
       "3️⃣ **节点失效/无法使用怎么办？**\n" +
       "如果遇到节点不可用，请直接点击下方按钮联系管理员，我会第一时间进行修复！\n" +
       "━━━━━━━━━━━━━━━";
-
-    if (isAdmin) {
-      welcomeText += "\n\n🛠️ **【老板专属动态管理指令】**\n" +
-                    "• **添加/更新**：`添加#香港节点#节点内容`\n" +
-                    "• **彻底删除**：`删除#香港节点`";
-    }
 
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
