@@ -1,0 +1,138 @@
+export default {
+  async fetch(request, env, ctx) {
+    // 基础安全隔离：如果核心环境变量缺失，直接报错拦截，不暴露任何逻辑
+    if (!env.BOT_TOKEN || !env.CHANNEL_ID || !env.CHANNEL_LINK) {
+      return new Response("Error: Critical environment variables are missing.", { status: 500 });
+    }
+
+    if (request.method === "POST") {
+      try {
+        const update = await request.json();
+        // 严格限定：只处理私聊文本消息，群组或其它类型事件一律丢弃
+        if (update.message && update.message.chat.type === "private" && update.message.text) {
+          ctx.waitUntil(handlePrivateMessage(update.message, env));
+        }
+      } catch (e) {
+        console.error("Webhook processing error:", e);
+      }
+    }
+    return new Response("OK");
+  }
+};
+
+// ==========================================
+// 核心业务处理逻辑（严格卡点）
+// ==========================================
+async function handlePrivateMessage(message, env) {
+  const chatId = message.chat.id;
+  const text = message.text.trim();
+
+  if (!text) return;
+
+  // 🔒 第一道防线：强制订阅判定（核心卡点，失败或异常绝不放行）
+  const isSubscribed = await checkChannelSubscription(chatId, env);
+
+  if (!isSubscribed) {
+    // 未订阅或状态异常用户，一律下发拦截文案，且不进行任何关键词匹配
+    await telegramApi(env.BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: "⚠️ **您需要先订阅我们的官方频道，才能使用自动回复功能！**\n\n订阅后，请返回此处重新发送您的关键词即可。",
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📢 立即订阅官方频道", url: env.CHANNEL_LINK }]
+        ]
+      }
+    });
+    return; // 强行阻断死锁，绝对无法向下运行
+  }
+
+  // 2. 已通过订阅验证，处理系统内置基础指令
+  if (text === "/start" || text === "/help") {
+    await telegramApi(env.BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: "🎉 **身份验证成功！欢迎使用自动获取系统。**\n\n请输入相应的关键词（如：`日本节点`或者`帮助`）来获取对应配置信息。",
+      parse_mode: "Markdown"
+    });
+    return;
+  }
+
+  // ==========================================
+  // 📝 纯文本变量动态解析（一行一条，防崩溃过滤）
+  // ==========================================
+  const RULES = [];
+  if (env.NODE_RULES) {
+    const lines = env.NODE_RULES.split('\n');
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) continue; // 过滤空行
+
+      const separatorIndex = trimmedLine.indexOf('===');
+      if (separatorIndex > -1) {
+        const keywords = trimmedLine.substring(0, separatorIndex).trim();
+        const response = trimmedLine.substring(separatorIndex + 3).trim();
+        if (keywords && response) {
+          RULES.push({ keywords, response });
+        }
+      }
+    }
+  }
+
+  // 3. 稳妥的字符串包含匹配机制
+  for (const rule of RULES) {
+    if (text.toLowerCase().includes(rule.keywords.toLowerCase())) {
+      // 支持通过 \n 进行文本内换行解析
+      const formattedResponse = rule.response.replace(/\\n/g, '\n');
+      await telegramApi(env.BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: formattedResponse,
+        parse_mode: "Markdown"
+      });
+      return;
+    }
+  }
+
+  // 4. 未匹配到任何节点关键词的兜底回复
+  await telegramApi(env.BOT_TOKEN, "sendMessage", {
+    chat_id: chatId,
+    text: "❓ **未找到匹配的节点内容。**\n\n请检查您的关键词是否正确，或者发送 `/help` 查看指南。",
+    parse_mode: "Markdown"
+  });
+}
+
+// ==========================================
+// 🛡️ 强制订阅安全性隔离函数
+// ==========================================
+async function checkChannelSubscription(userId, env) {
+  try {
+    const res = await telegramApi(env.BOT_TOKEN, "getChatMember", {
+      chat_id: env.CHANNEL_ID,
+      user_id: userId
+    });
+    // 只有这三种状态属于有效订阅者：创建者、管理员、普通成员
+    const validStatuses = ["creator", "administrator", "member"];
+    return validStatuses.includes(res.status);
+  } catch (e) {
+    // 安全加固：如果因网络波动、Bot未加频道、或权限不足导致API请求报错，
+    // 一律视为未订阅（返回 false），严防异常绕过漏洞。
+    console.error("Critical: Failed to verify channel membership:", e);
+    return false;
+  }
+}
+
+// ==========================================
+// Telegram API 请求封装
+// ==========================================
+async function telegramApi(token, methodName, params = {}) {
+  const url = `https://api.telegram.org/bot${token}/${methodName}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  const data = await response.json();
+  if (!data.ok) {
+    throw new Error(`${methodName} API Execution Failed:${data.description}`);
+  }
+  return data.result;
+}
