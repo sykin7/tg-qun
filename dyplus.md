@@ -18,7 +18,7 @@
 
 请直接点击下方链接，去复制仓库中的完整核心脚本 JavaScript 代码：
 
-👉 **[点击此处直连获取机器人核心部署脚本](https://github.com/sykin7/tg-qun/blob/main/dy.json)**
+👉 **[点击此处直连获取机器人核心部署脚本]([https://github.com/sykin7/tg-qun/blob/main/dy.json](https://github.com/sykin7/tg-qun/blob/main/dy_plus.js))**
 
 *将该链接中的完整代码全选复制，完全覆盖粘贴到你的 Cloudflare Worker 编辑器中并部署即可。*
 
