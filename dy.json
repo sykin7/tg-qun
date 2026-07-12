@@ -1,6 +1,9 @@
+// 在全局内存中开辟计数器，用于实施一秒2次的防刷熔断机制
+const userCache = new Map();
+
 export default {
   async fetch(request, env, ctx) {
-    // 基础安全隔离：如果核心环境变量缺失，直接报错拦截，不暴露任何逻辑
+    // 基础安全隔离：如果核心环境变量缺失，直接报错拦截
     if (!env.BOT_TOKEN || !env.CHANNEL_ID || !env.CHANNEL_LINK) {
       return new Response("Error: Critical environment variables are missing.", { status: 500 });
     }
@@ -8,8 +11,37 @@ export default {
     if (request.method === "POST") {
       try {
         const update = await request.json();
-        // 严格限定：只处理私聊文本消息，群组或其它类型事件一律丢弃
+        
+        // 严格限定：只处理私聊纯文本消息
         if (update.message && update.message.chat.type === "private" && update.message.text) {
+          const chatId = update.message.chat.id;
+          const now = Date.now();
+          
+          // 🛡️ 核心防刷屏卡点：如果同一个用户在 1 秒（1000毫秒）内发送超过 2 次消息，直接对其熔断
+          if (userCache.has(chatId)) {
+            const userData = userCache.get(chatId);
+            if (now - userData.lastTime < 1000) {
+              userData.count += 1;
+              if (userData.count > 2) {
+                console.warn(`用户 ${chatId} 正在恶意刷屏，已被 Worker 强制熔断拦截。`);
+                return new Response("OK"); // 假动作响应 OK，但 CF 内部直接终止，绝不调取 Telegram API，省电省额度
+              }
+            } else {
+              userData.count = 1; // 超过 1 秒，重置计数
+            }
+            userData.lastTime = now;
+          } else {
+            userCache.set(chatId, { lastTime: now, count: 1 }); // 新用户初始化
+          }
+
+          // 定期自动清理小黑屋内存，防止 Worker 运行内存溢出
+          if (userCache.size > 500) {
+            for (const [id, data] of userCache.entries()) {
+              if (now - data.lastTime > 5000) userCache.delete(id);
+            }
+          }
+
+          // 频率安全，放行进入核心订阅验证与业务分发逻辑
           ctx.waitUntil(handlePrivateMessage(update.message, env));
         }
       } catch (e) {
@@ -29,11 +61,11 @@ async function handlePrivateMessage(message, env) {
 
   if (!text) return;
 
-  // 🔒 第一道防线：强制订阅判定（核心卡点，失败或异常绝不放行）
+  // 🔒 第一道防线：强制订阅判定（核心卡点，未订阅或异常失败绝不放行）
   const isSubscribed = await checkChannelSubscription(chatId, env);
 
   if (!isSubscribed) {
-    // 未订阅或状态异常用户，一律下发拦截文案，且不进行任何关键词匹配
+    // 未订阅用户，直接下发强力拦截文案及加入频道按钮
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
       text: "⚠️ **您需要先订阅我们的官方频道，才能使用自动回复功能！**\n\n订阅后，请返回此处重新发送您的关键词即可。",
@@ -47,12 +79,33 @@ async function handlePrivateMessage(message, env) {
     return; // 强行阻断死锁，绝对无法向下运行
   }
 
-  // 2. 已通过订阅验证，处理系统内置基础指令
+  // 2. 已通过订阅验证，处理系统内置基础指令（小白指南与双向客服入口）
   if (text === "/start" || text === "/help") {
+    const welcomeText = 
+      "🎉 **身份验证成功！欢迎使用自动获取系统。**\n\n" +
+      "━━━━━━━━━━━━━━━\n" +
+      "📖 **【节点获取与使用指南】**\n\n" +
+      "1️⃣ **如何获取节点？**\n" +
+      "直接在下方对话框中发送对应的**关键词**即可获取实时节点：\n" +
+      "• 发送 `香港节点` 获取港线专线\n" +
+      "• 发送 `日本节点` 获取低延迟游戏线\n" +
+      "• 发送 `帮助` 重新查看此指南\n\n" +
+      "2️⃣ **如何使用节点？**\n" +
+      "• 机器人发给你的节点链接，**直接点击即可自动复制**。\n" +
+      "• 复制后打开你的代理客户端（如 Clash / v2rayN / Shadowrocket），选择“从剪贴板导入”即可完成配置。\n\n" +
+      "3️⃣ **节点失效/无法使用怎么办？**\n" +
+      "如果遇到节点不可用、网络波动或其它技术故障，请直接点击下方按钮联系管理员，我会第一时间进行修复！\n" +
+      "━━━━━━━━━━━━━━━";
+
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
-      text: "🎉 **身份验证成功！欢迎使用自动获取系统。**\n\n请输入相应的关键词（如：`日本节点`或者`帮助`）来获取对应配置信息。",
-      parse_mode: "Markdown"
+      text: welcomeText,
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "✍️ 节点不能用？联系老板", url: "https://t.me/AGsykin_bot" }]
+        ]
+      }
     });
     return;
   }
@@ -113,8 +166,7 @@ async function checkChannelSubscription(userId, env) {
     const validStatuses = ["creator", "administrator", "member"];
     return validStatuses.includes(res.status);
   } catch (e) {
-    // 安全加固：如果因网络波动、Bot未加频道、或权限不足导致API请求报错，
-    // 一律视为未订阅（返回 false），严防异常绕过漏洞。
+    // 安全加固：如果接口请求报错，一律视为未订阅（返回 false），严防异常绕过漏洞。
     console.error("Critical: Failed to verify channel membership:", e);
     return false;
   }
