@@ -102,8 +102,10 @@ async function setupDynamicMenu(chatId, isAdmin, token) {
 
 async function handlePrivateMessage(message, env, ctx) {
   const chatId = message.chat.id;
-  const text = message.text.trim();
+  const rawText = message.text;
 
+  if (typeof rawText !== 'string') return;
+  const text = rawText.trim();
   if (!text) return;
 
   const isAdmin = String(chatId) === String(env.ADMIN_ID).trim();
@@ -113,7 +115,7 @@ async function handlePrivateMessage(message, env, ctx) {
     if (!env.TG_LIMIT_KV) {
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
         chat_id: chatId,
-        text: "❌ **操作失败**\n\n动态管理与黑名单功能**必须绑定 KV 命名空间**！",
+        text: "❌ **操作失败**\n\n动态管理与黑名单功能必须绑定 KV 命名空间！",
         parse_mode: "Markdown"
       });
       return;
@@ -310,7 +312,7 @@ async function handlePrivateMessage(message, env, ctx) {
       "• 发送 `帮助` 重新查看此指南\n\n" +
       "2️⃣ **如何使用节点？**\n" +
       "• 机器人发给你的节点链接，**直接点击即可自动复制**。\n" +
-      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可完成配置。\n" +
+      "• 复制后打开你的代理客户端，选择“从剪贴板导入”即可完成配置。\n\n" +
       "3️⃣ **节点失效/无法使用怎么办？**\n" +
       "如果遇到节点不可用，请直接点击下方按钮联系管理员，我会第一时间进行修复！\n" +
       "━━━━━━━━━━━━━━━";
@@ -373,27 +375,31 @@ async function handlePrivateMessage(message, env, ctx) {
       if (!isAdmin) {
         ctx.waitUntil((async () => {
           try {
-            const firstName = message.from.first_name || "";
-            const lastName = message.from.last_name || "";
+            const rawFirstName = message.from.first_name || "";
+            const rawLastName = message.from.last_name || "";
             const username = message.from.username ? `@${message.from.username}` : "无用户名";
-            const userDisplayName = `${firstName}${lastName}`.trim() || "未知昵称";
+            
+            const cleanName = `${rawFirstName} ${rawLastName}`.trim()
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;") || "未知昵称";
             
             const timeString = new Date(Date.now() + 8 * 3600000).toISOString()
               .replace('T', ' ')
               .substring(0, 16);
 
             const adminNotice = 
-              `📢 **老板，有用户成功获取了节点！**\n\n` +
-              `👤 **用户昵称**：${userDisplayName}\n` +
-              `🆔 **用户账号**：\`${message.from.id}\` (${username})\n` +
-              `🔑 **触发词条**：\`${rule.keywords}\`\n` +
-              `⏱️ **获取时间**：${timeString} (北京时间)\n\n` +
-              `💡 *提示：若此用户恶意刷屏，复制其账号 ID 后发送「拉黑#用户ID」即可将其永久封禁。*`;
+              `📢 <b>老板，有用户成功获取了节点！</b>\n\n` +
+              `👤 <b>用户昵称</b>：${cleanName}\n` +
+              `🆔 <b>用户账号</b>：<code>${message.from.id}</code> (${username})\n` +
+              `🔑 <b>触发词条</b>：<code>${rule.keywords}</code>\n` +
+              `⏱️ <b>获取时间</b>：${timeString} (北京时间)\n\n` +
+              `💡 <i>提示：若此用户恶意刷屏，长按复制其账号 ID 后发送「拉黑#用户ID」即可将其永久封禁。</i>`;
 
             await telegramApi(env.BOT_TOKEN, "sendMessage", {
               chat_id: env.ADMIN_ID,
               text: adminNotice,
-              parse_mode: "Markdown"
+              parse_mode: "HTML"
             });
           } catch (err) {
             console.error("Failed to push log to admin:", err);
