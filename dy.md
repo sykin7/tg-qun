@@ -29,9 +29,9 @@
 
 | 变量名称 (Key) | 作用描述 | 填写示例格式 |
 | :--- | :--- | :--- |
-| **`BOT_TOKEN`** | 你的 Telegram 自动回复机器人 Token | `88394929:AAF...（从@BotFather获取）` |
-| **`CHANNEL_ID`** | 你的官方公网频道用户名（必须带 `@` 符号） | `@xqkin` |
-| **`CHANNEL_LINK`** | 拦截用户时，引导跳转订阅频道的链接 | `https://t.me/xqkin` |
+| **`BOT_TOKEN`** | 你的 Telegram 自动回复机器人 Token | `（从@BotFather获取）` |
+| **`CHANNEL_ID`** | 你的官方公网频道用户名（必须带 `@` 符号） | `@xxxx` |
+| **`CHANNEL_LINK`** | 拦截用户时，引导跳转订阅频道的链接 | `https://t.me/xxxx` |
 | **`NODE_RULES`** | 你的节点关键词纯文本数据库（一行一个规则） | *详见下方纯文本格式演示* |
 
 ### 📝 `NODE_RULES` 纯文本变量填写规范
