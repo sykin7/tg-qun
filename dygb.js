@@ -132,7 +132,6 @@ async function handlePrivateMessage(message, env, ctx) {
       } catch (e) {
         blacklist = [];
       }
-      if (!Array.isArray(blacklist)) blacklist = [];
 
       if (text.startsWith("拉黑#")) {
         if (!blacklist.includes(targetId)) {
@@ -167,7 +166,6 @@ async function handlePrivateMessage(message, env, ctx) {
     } catch (e) {
       currentRules = [];
     }
-    if (!Array.isArray(currentRules)) currentRules = [];
 
     if (text.startsWith("添加#")) {
       const parts = text.split("#");
@@ -242,6 +240,7 @@ async function handlePrivateMessage(message, env, ctx) {
       const deleteParam = text.split("#")[1].trim();
       if (!deleteParam) return;
 
+      const beforeLength = currentRules.length;
       const index = parseInt(deleteParam, 10) - 1;
 
       if (!isNaN(index) && index >= 0 && index < currentRules.length) {
@@ -300,7 +299,6 @@ async function handlePrivateMessage(message, env, ctx) {
         currentRules = [];
       }
     }
-    if (!Array.isArray(currentRules)) currentRules = [];
 
     let rulesListText = "";
     if (currentRules.length === 0) {
@@ -313,18 +311,33 @@ async function handlePrivateMessage(message, env, ctx) {
       });
     }
 
+    const botInfo = await telegramApi(env.BOT_TOKEN, "getMe");
+    const myBotUrl = `https://t.me/${botInfo.username}`;
+
     const manageText = 
       `🛠️ <b>【老板专属后台动态管理系统】</b>\n\n` +
       `🔍 <b>【当前 KV 数据库规则盘点明细】</b>\n` +
       `${rulesListText}\n` +
       `━━━━━━━━━━━━━━━\n` +
-      `📥 <b>[快捷维护控制模板]</b>\n` +
-      `• <b>添加/更新</b>：<code>添加#关键词或网址#频道显示的遮罩备注#真实内容</code>\n` +
-      `• <b>精准选择性删除</b>：<code>删除#数字编号</code> <i>(例：删除#1)</i>\n\n` +
-      `🚫 <b>[黑名单管控模块]</b>\n` +
+      `📥 <b>[小白式精细控制模板（点击即可自动复制）]</b>\n\n` +
+      `<b>1️⃣ 快捷添加/更新【文字节点】</b>\n` +
+      `<code>添加#香港节点#🇭🇰 香港专线#🇭🇰 **香港专线节点已更新**\\n\\n\`vmess://链接xxxxx#备注\``\n\n` +
+      `<b>2️⃣ 快捷添加/链接【网页遮罩】</b>\n` +
+      `<code>添加#https://t.me/your_qun#💬 点击加入技术交流群#欢迎加入官方群组交流！</code>\n\n` +
+      `<b>3️⃣ 快捷添加/广播【纯文字公告】</b>（第一个参数填你机器人的私聊链接）\n` +
+      `<code>添加#${myBotUrl}#📢 官方全新升级公告#感谢大家支持，本系统已完成高并发架构升级！</code>\n\n` +
+      `<b>4️⃣ 快捷添加/展示【海报图文大图】</b>（第一个参数填群组里图片的复制链接）\n` +
+      `<code>添加#https://t.me/xqkin/123#🖼️ 查看活动海报详情#🎁 欢迎参加特惠活动！优惠码：\`LUCK666\`</code>\n\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `🗑️ <b>[选择性精准删除控制（点击自动复制）]</b>\n` +
+      `• <b>按上方列表的数字编号精准删除：</b>\n` +
+      `<code>删除#1</code> <i>(直接发送即可精准切除列表对应的第1条规则)</i>\n` +
+      `• <b>按触发关键词直接匹配删除：</b>\n` +
+      `<code>删除#香港节点</code>\n\n` +
+      `🚫 <b>[黑名单管控模块（点击自动复制）]</b>\n` +
       `• <b>拉黑账户</b>：<code>拉黑#用户纯数字ID</code>\n` +
       `• <b>解除封禁</b>：<code>解黑#用户纯数字ID</code>\n\n` +
-      `💡 <i>小白提示：点击列表中的编号或者控制模板即可自动复制。若列表里规则发生改变，再次发送 /manage 即可刷新列表账单。</i>`;
+      `💡 <i>小白技巧提示：点击上面的每一行灰色代码块都能直接复制到输入框里。如对规则进行了添加或删除，再次发送 /manage 指令就能更新并看到最新的盘点账单列表！</i>`;
 
     await telegramApi(env.BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
@@ -352,7 +365,6 @@ async function handlePrivateMessage(message, env, ctx) {
         if (memoryBlacklistCache) blacklist = memoryBlacklistCache;
       }
     }
-    if (!Array.isArray(blacklist)) blacklist = [];
 
     if (blacklist.includes(String(chatId))) {
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
@@ -428,7 +440,6 @@ async function handlePrivateMessage(message, env, ctx) {
       }
     }
   }
-  if (!Array.isArray(RULES)) RULES = [];
 
   if (RULES.length === 0 && env.NODE_RULES) {
     const lines = env.NODE_RULES.split('\n');
@@ -474,6 +485,7 @@ async function handlePrivateMessage(message, env, ctx) {
               `👤 <b>用户昵称</b>：${cleanName}\n` +
               `🆔 <b>用户账号</b>：<code>${message.from.id}</code> (${username})\n` +
               `🔑 <b>触发词条</b>：<code>${rule.keywords}</code>\n` +
+              `🔍 <b>保存备注</b>：<code>${rule.customMemo || "无"}</code>\n` +
               `⏱️ <b>获取时间</b>：${timeString} (北京时间)\n\n` +
               `💡 <i>提示：若此用户恶意刷屏，长按复制其账号 ID 后发送「拉黑#用户ID」即可将其永久封禁。</i>`;
 
