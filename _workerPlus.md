@@ -37,8 +37,9 @@
 
 ### 3. 部署代码与 Webhook 设置
 1. 将本仓库代码粘贴到 Workers 的编辑器中并部署。
-2. 首次部署后，代码会自动执行 `dbMigrate`，在 D1 数据库中自动创建所需的 `config`、`users`、`messages` 表及字段，**无需手动建表**。
-3. 在浏览器访问 `https://api.telegram.org/bot<你的BOT_TOKEN>/setWebhook?url=<你的Worker域名>` 完成 Webhook 绑定。
+2. 👉 **[点击此处直连获取机器人核心部署脚本](https://github.com/sykin7/tg-qun/blob/main/_workerPlus.js)**
+3. 首次部署后，代码会自动执行 `dbMigrate`，在 D1 数据库中自动创建所需的 `config`、`users`、`messages` 表及字段，**无需手动建表**。
+4. 在浏览器访问 `https://api.telegram.org/bot<你的BOT_TOKEN>/setWebhook?url=<你的Worker域名>` 完成 Webhook 绑定。
 
 ---
 
