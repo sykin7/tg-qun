@@ -42,6 +42,11 @@
 6. 保存生成的两个密钥：
    * **Sitekey (站点密钥)**：用于前端网页渲染。
    * **Secret Key (通信密钥)**：用于后端服务器二次确权。
+<img width="567" height="311" alt="image" src="https://github.com/user-attachments/assets/75a10702-017e-4d88-89d9-b67feb5bbb04" />
+<img width="1387" height="351" alt="image" src="https://github.com/user-attachments/assets/f7f91976-4c63-40ca-b3ec-b2afc0a75866" />
+<img width="1213" height="807" alt="image" src="https://github.com/user-attachments/assets/0e2a5260-0121-4bc1-adb8-8847a45482af" />
+<img width="938" height="815" alt="image" src="https://github.com/user-attachments/assets/ffd386f0-ff15-4329-8226-6a5020f94beb" />
+<img width="1058" height="427" alt="image" src="https://github.com/user-attachments/assets/27a4a318-a298-4cdb-8830-dc909dc85f99" />
 
 ---
 
