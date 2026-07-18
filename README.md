@@ -2,11 +2,14 @@
 
 这是一个专为匿名消息转发而设计的 Telegram 机器人。
 
-Cloudflare worker部署D1客服机器人：
+## Cloudflare worker部署D1客服机器人：
 👉 **[点击此处直连获取机器人核心部署脚本](https://github.com/sykin7/tg-qun/blob/main/_workerPlus.js)**
+
 👉 **[点击此处直连查看部署使用说明](https://github.com/sykin7/tg-qun/blob/main/_workerPlus.md)**
-Cloudflare worker部署订阅管理广播频道机器人：
+
+## Cloudflare worker部署订阅管理广播频道机器人：
 👉 **[点击此处直连获取机器人核心部署脚本](https://github.com/sykin7/tg-qun/blob/main/dyjc.js)**
+
 👉 **[点击此处直连查看部署使用说明](https://github.com/sykin7/tg-qun/blob/main/dyjc完满版.md)**
 
 您（管理员）可以通过私聊向机器人发送消息，机器人会将这些消息（文字、图片、文件等）匿名地复制到一个或多个您指定的群组中。群组中的人**无法知道**消息是您发送的，只会看到机器人（用您伪装的名字）发送了消息。
