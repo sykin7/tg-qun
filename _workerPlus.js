@@ -581,7 +581,7 @@ async function handlePrivateMessage(message, env) {
               chat_id: chatId,
               text: autoReplyPrefix + rule.response,
             });
-            return;
+            break;
           }
         } catch (e) {
           // 忽略异常自动回复规则
