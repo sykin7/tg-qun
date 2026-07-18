@@ -81,6 +81,8 @@
 6. **激活 Webhook 联通**：
    * 浏览器访问：`https://api.telegram.org/bot<你的BOT_TOKEN>/setWebhook?url=https://<你的自定义域名>`
    * 页面返回 `{"ok":true,"result":true...}` 即代表机器人上线成功！
+   * <img width="514" height="80" alt="image" src="https://github.com/user-attachments/assets/34e1bf0a-8dca-4b20-b12e-ccebf3dfb06b" />
+
 
 ---
 
