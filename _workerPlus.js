@@ -7,12 +7,17 @@ async function dbConfigPut(key, value, env) {
   await env.TG_BOT_DB.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)").bind(key, value).run();
 }
 
+// 【修复：解决并发插入导致 SQLITE_CONSTRAINT_PRIMARYKEY 主键冲突报错的 BUG】
 async function dbUserGetOrCreate(userId, env) {
   let user = await env.TG_BOT_DB.prepare("SELECT * FROM users WHERE user_id = ?").bind(userId).first();
   if (!user) {
-    await env.TG_BOT_DB.prepare(
-      "INSERT INTO users (user_id, user_state, is_blocked, is_muted, block_count) VALUES (?, 'new', 0, 0, 0)"
-    ).bind(userId).run();
+    try {
+      await env.TG_BOT_DB.prepare(
+        "INSERT OR IGNORE INTO users (user_id, user_state, is_blocked, is_muted, block_count) VALUES (?, 'new', 0, 0, 0)"
+      ).bind(userId).run();
+    } catch (e) {
+      // 捕获并忽略极端并发下的主键冲突异常
+    }
     user = await env.TG_BOT_DB.prepare("SELECT * FROM users WHERE user_id = ?").bind(userId).first();
   }
   if (user) {
@@ -128,12 +133,15 @@ async function dbMigrate(env) {
   }
 }
 
+// 【优化：规范化 HTML 转义，增加单双引号防注入破坏，杜绝潜在的 HTML 解析错误风险】
 function escapeHtml(text) {
   if (!text) return '';
   return text.toString()
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function generateRandomCode(length = 4) {
@@ -158,7 +166,7 @@ function formatTimestamp(timestamp) {
   });
 }
 
-function getUserInfo(user, initialTimestamp = null) {
+function getUserInfo(user) {
   const userId = user.id.toString();
   const rawName = (user.first_name || "") + (user.last_name ? ` ${user.last_name}` : "");
   const rawUsername = user.username ? `@${user.username}` : "无";
@@ -322,7 +330,6 @@ async function telegramApi(token, methodName, params = {}) {
 }
 
 async function syncRemoteSpamRules(env) {
-  // 【优化：优先从 Cloudflare 环境变量 SPAM_URL 获取，如果没有设置则自动使用默认兜底链接】
   const targetUrl = env.SPAM_URL || "https://raw.githubusercontent.com/sykin7/my-telegram-spam-rules/main/spam.txt";
   try {
     const res = await fetch(targetUrl, { 
@@ -332,7 +339,6 @@ async function syncRemoteSpamRules(env) {
     if (!res.ok) throw new Error(`HTTP 错误状态码: ${res.status}`);
     
     const textData = await res.text();
-    // 兼容可能存在的 \r\n 换行格式，并移除空格和注释行
     const remoteKeywords = textData
       .split('\n')
       .map(line => line.replace(/\r/g, '').trim())
@@ -436,7 +442,6 @@ async function handlePrivateMessage(message, env) {
     const blockKeywords = await getBlockKeywords(env);
     const blockThreshold = parseInt(await getConfig('block_threshold', env, "5"), 10) || 5;
     
-    // 【漏斗安全机制：汇聚所有隐藏文本域，杜绝媒体说明绕过】
     const triggerText = [
       message.text,
       message.caption,
@@ -445,32 +450,27 @@ async function handlePrivateMessage(message, env) {
       message.forward_from_chat?.username
     ].filter(Boolean).join(" ");
 
+    // 【优化：用高效率的字符串包含匹配代替耗费 CPU 的正则，防止大量词库导致 Worker 超时】
     if (blockKeywords.length > 0 && triggerText) {
+      const lowerTriggerText = triggerText.toLowerCase();
       let currentCount = user.block_count;
       for (const keyword of blockKeywords) {
-        try {
-          // 【正则防御：自动对所有外部词库的特殊符号做转义，杜绝表达式崩溃漏洞】
-          const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const regex = new RegExp(escapedKeyword, 'gi');
-          if (regex.test(triggerText)) {
-            currentCount += 1;
-            await dbUserUpdate(userId, { block_count: currentCount }, env);
-            const blockNotification = `⚠️ 您的消息触发了屏蔽关键词过滤器 (${currentCount}/${blockThreshold}次)，此消息已被丢弃，不会转发给对方。`;
-            if (currentCount >= blockThreshold) {
-              await dbUserUpdate(userId, { is_blocked: true }, env);
-              const autoBlockMessage = `❌ 您已多次触发屏蔽关键词，根据设置，您已被自动屏蔽。机器人将不再接收您的任何消息。`;
-              await telegramApi(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text: blockNotification });
-              await telegramApi(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text: autoBlockMessage });
-              return;
-            }
-            await telegramApi(env.BOT_TOKEN, "sendMessage", {
-              chat_id: chatId,
-              text: blockNotification,
-            });
+        if (keyword && lowerTriggerText.includes(keyword.toLowerCase())) {
+          currentCount += 1;
+          await dbUserUpdate(userId, { block_count: currentCount }, env);
+          const blockNotification = `⚠️ 您的消息触发了屏蔽关键词过滤器 (${currentCount}/${blockThreshold}次)，此消息已被丢弃，不会转发给对方。`;
+          if (currentCount >= blockThreshold) {
+            await dbUserUpdate(userId, { is_blocked: true }, env);
+            const autoBlockMessage = `❌ 您已多次触发屏蔽关键词，根据设置，您已被自动屏蔽。机器人将不再接收您的任何消息。`;
+            await telegramApi(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text: blockNotification });
+            await telegramApi(env.BOT_TOKEN, "sendMessage", { chat_id: chatId, text: autoBlockMessage });
             return;
           }
-        } catch (e) {
-          // 捕获异常规则匹配
+          await telegramApi(env.BOT_TOKEN, "sendMessage", {
+            chat_id: chatId,
+            text: blockNotification,
+          });
+          return;
         }
       }
     }
@@ -550,6 +550,21 @@ async function handlePrivateMessage(message, env) {
       }
     }
     
+    // 【修复：兜底机制，防止非白名单类型的消息（如联系人、地图位置、骰子等）绕过限制】
+    if (isForwardable) {
+      const allowedTypes = [
+        'text', 'photo', 'video', 'document', 'sticker', 'audio', 'voice', 
+        'animation', 'forward_from', 'forward_from_chat'
+      ];
+      const hasUnrecognizedType = Object.keys(message).some(key => 
+        ['contact', 'location', 'venue', 'dice', 'game', 'poll'].includes(key)
+      );
+      if (hasUnrecognizedType) {
+        isForwardable = false;
+        filterReason = '未允许的特殊消息类型（如联系人/位置/投票等）';
+      }
+    }
+
     if (!isForwardable) {
       const filterNotification = `此消息已被过滤：${filterReason}。根据设置，此类内容不会转发给对方。`;
       await telegramApi(env.BOT_TOKEN, "sendMessage", {
@@ -591,6 +606,16 @@ async function handleStart(chatId, env) {
   const defaultWelcome = "为了防止垃圾广告骚扰，首次使用需要完成身份验证。";
   const welcomeMessage = await getConfig('welcome_msg', env, defaultWelcome);
   const user = await dbUserGetOrCreate(chatId, env);
+  
+  // 【修复：增加状态保护逻辑。如果是已验证的正常用户手误发了 /start，直接放行，拒绝重新要验证码的行为】
+  if (user && user.user_state === 'verified') {
+    await telegramApi(env.BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: "🎉 您已经是通过验证的用户啦，可以直接发送消息与客服对话！",
+    });
+    return;
+  }
+
   const userInfo = getUserInfo({
     id: chatId,
     first_name: user.user_info?.name || '用户',
@@ -1013,7 +1038,6 @@ async function handleAdminRuleDelete(chatId, messageId, env, key, deleteValue, c
   } else {
     return;
   }
-  // 【审计修复：安全捕获外部传入的动态 CallbackQuery ID，彻底清除原硬编码漏洞】
   if (callbackQueryId) {
     await telegramApi(env.BOT_TOKEN, "answerCallbackQuery", {
       callback_query_id: callbackQueryId,
@@ -1126,7 +1150,7 @@ async function handleAdminConfigInput(userId, text, adminStateJson, env) {
     } else if (adminState.key === 'backup_group_id') {
       finalValue = text.trim();
     } else if (adminState.key === 'authorized_admins') {
-      const adminList = text.split(',').map(id => id.trim()).filter(id => id !== "");
+      const adminList = text.split(',').map(id => id.trim()).filter(id => id !== "") ;
       finalValue = JSON.stringify(adminList);
     }
     if (adminState.key === 'block_keywords_add') {
@@ -1208,7 +1232,7 @@ async function handleAdminConfigInput(userId, text, adminStateJson, env) {
 
 async function handleRelayToTopic(message, user, env) {
   const { from: userDetails, date } = message;
-  const { userId, topicName, infoCard } = getUserInfo(userDetails, date);
+  const { userId, topicName, infoCard } = getUserInfo(userDetails);
   let topicId = user.topic_id;
   const isBlocked = user.is_blocked;
   const isMuted = user.is_muted || false;
@@ -1220,7 +1244,7 @@ async function handleRelayToTopic(message, user, env) {
         name: topicName,
       });
       const newTopicId = newTopic.message_thread_id.toString();
-      const { name, username } = getUserInfo(userDetails, date);
+      const { name, username } = getUserInfo(userDetails);
       const newInfo = { name, username, first_message_date: date };
       const cardMarkup = getInfoCardButtons(userId, isBlocked, isMuted);
       const sentMsg = await telegramApi(env.BOT_TOKEN, "sendMessage", {
@@ -1320,7 +1344,7 @@ async function handleRelayToTopic(message, user, env) {
   }
   const backupGroupId = await getConfig('backup_group_id', env, "");
   if (backupGroupId) {
-    const userInfo = getUserInfo(message.from, user.date);
+    const userInfo = getUserInfo(message.from);
     const fromUserHeader = ` 
 <b>--- 备份消息 ---</b>
 👤 <b>来自用户:</b> <a href="tg://user?id=${userInfo.userId}">${userInfo.name || '无昵称'}</a> • ID: <code>${userInfo.userId}</code> • 用户名: ${userInfo.username} 
@@ -1695,7 +1719,6 @@ async function handleCallbackQuery(callbackQuery, env) {
       });
       await handleAdminKeywordBlockMenu(chatId, 0, env);
     } else if (actionType === 'delete' && keyOrAction && value) {
-      // 这里的分支与底部数据交互闭环绑定，传入参数 callbackQuery.id 进行安全弹窗应答
       await handleAdminRuleDelete(chatId, message.message_id, env, keyOrAction, value, callbackQuery.id);
     }
     return;
