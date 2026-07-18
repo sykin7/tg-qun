@@ -334,7 +334,7 @@ async function syncRemoteSpamRules(env) {
       .filter(line => line && !line.startsWith('#') && !line.startsWith('//'));
       
     if (remoteKeywords.length === 0) {
-      return { success: false, msg: "远程文件内容为空或无有效广告词" };
+      return { success: false, msg: "远程 file 内容为空或无有效广告词" };
     }
     
     const localKeywords = await getBlockKeywords(env);
@@ -347,7 +347,6 @@ async function syncRemoteSpamRules(env) {
   }
 }
 
-// 【新增：生成基于 Web 的 Cloudflare Turnstile 验证网页】
 function handleRenderVerifyPage(userId, siteKey) {
   const html = `
   <!DOCTYPE html>
@@ -407,7 +406,6 @@ function handleRenderVerifyPage(userId, siteKey) {
   return new Response(html, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 }
 
-// 【新增：对前端提交上来的 Turnstile Token 进行安全校验】
 async function handleVerifyToken(request, userId, env) {
   try {
     const { token } = await request.json();
@@ -422,10 +420,7 @@ async function handleVerifyToken(request, userId, env) {
     
     const outcome = await response.json();
     if (outcome.success) {
-      // 改变数据库中用户的状态为已验证
       await dbUserUpdate(userId, { user_state: 'verified' }, env);
-      
-      // 主动给 Telegram 用户推送验证成功的消息提示
       await telegramApi(env.BOT_TOKEN, 'sendMessage', {
         chat_id: userId,
         text: '🎉 恭喜！您已成功通过 Cloudflare 安全验证，现在可以直接发送消息与客服对话了！'
@@ -448,8 +443,6 @@ export default {
     }
 
     const url = new URL(request.url);
-    
-    // 【新增架构路由：捕获处理网页端来的 Cloudflare 校验请求】
     if (url.pathname.startsWith('/verify/')) {
       const userId = url.pathname.split('/')[2];
       if (!userId) return new Response('Bad Request', { status: 400 });
@@ -461,13 +454,12 @@ export default {
       }
     }
 
-    // 原有的 Telegram Webhook 数据流入口
     if (request.method === "POST") {
       try {
         const update = await request.json();
         ctx.waitUntil(handleUpdate(update, env));
       } catch (e) {
-        // 捕获异常结构
+        // 捕获异常
       }
     }
     return new Response("OK");
@@ -537,7 +529,6 @@ async function handlePrivateMessage(message, env) {
   
   const userState = user.user_state;
   
-  // 【优化：如果用户处于未激活验证状态，直接提示并阻断发信，逼其走 Cloudflare 网页通道】
   if (userState !== "verified") {
     await handleStart(chatId, env, message.from);
     return;
@@ -684,7 +675,7 @@ async function handlePrivateMessage(message, env) {
               chat_id: chatId,
               text: autoReplyPrefix + rule.response,
             });
-            break; // ✅ 【已保留修复：发完自动回复照常将原消息转接给管理员查看】
+            break; // 允许消息照常转发给管理员
           }
         } catch (e) {
           // 忽略异常自动回复规则
@@ -695,7 +686,6 @@ async function handlePrivateMessage(message, env) {
   }
 }
 
-// 【重构：通过获取当前请求的主机名动态生成精准匹配的 CF 验证网页 URL】
 async function handleStart(chatId, env, rawFromUser) {
   const defaultWelcome = "为了防止垃圾广告骚扰，首次使用需要完成 Cloudflare 人类身份验证。";
   const welcomeMessage = await getConfig('welcome_msg', env, defaultWelcome);
@@ -711,11 +701,9 @@ async function handleStart(chatId, env, rawFromUser) {
 
   const userInfo = getUserInfo(rawFromUser || { id: chatId, first_name: '用户' });
   
-  // 自动化判定当前 Worker 的域名
   let botDomain = await getConfig('bot_domain', env, '');
   if (!botDomain && env.BOT_DOMAIN) botDomain = env.BOT_DOMAIN;
   
-  // 生成专属于这个用户的 CF 人类校验网址
   const verifyUrl = `${botDomain.replace(/\/$/, '')}/verify/${chatId}`;
 
   const text = `
