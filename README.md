@@ -15,7 +15,7 @@
 ## Cloudflare worker部署D1客服机器人Cloudflare验证版：
 👉 **[点击此处直连获取机器人核心部署脚本](https://github.com/sykin7/tg-qun/blob/main/_workerCF验证版.js)**
 
-👉 **[点击此处直连获取机器人核心部署脚本](https://github.com/sykin7/tg-qun/blob/main/_workerCF验证版.md)**
+👉 **[点击此处直连查看部署使用说明](https://github.com/sykin7/tg-qun/blob/main/_workerCF验证版.md)**
 
 您（管理员）可以通过私聊向机器人发送消息，机器人会将这些消息（文字、图片、文件等）匿名地复制到一个或多个您指定的群组中。群组中的人**无法知道**消息是您发送的，只会看到机器人（用您伪装的名字）发送了消息。
 [详细的部署教程](https://blog.agsy.hidns.vip/2026/01/17/%E7%A7%81%E8%81%8A%E8%BD%AC%E5%8F%91%E5%AE%A2%E6%9C%8D%E6%9C%BA%E5%99%A8%E4%BA%BA/)
